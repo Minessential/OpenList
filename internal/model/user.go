@@ -64,6 +64,7 @@ type User struct {
 	//   13: can decompress archives
 	//   14: can share
 	//   15: can customize share id
+	//   16: can add server download tasks
 	Permission int32  `json:"permission"`
 	OtpSecret  string `json:"-"`
 	SsoID      string `json:"sso_id"` // unique by sso platform
@@ -122,6 +123,14 @@ func CanAddOfflineDownloadTasks(permission int32) bool {
 
 func (u *User) CanAddOfflineDownloadTasks() bool {
 	return CanAddOfflineDownloadTasks(u.Permission)
+}
+
+func CanAddServerDownloadTasks(permission int32) bool {
+	return (permission>>16)&1 == 1
+}
+
+func (u *User) CanAddServerDownloadTasks() bool {
+	return CanAddServerDownloadTasks(u.Permission)
 }
 
 func CanWriteContent(permission int32) bool {

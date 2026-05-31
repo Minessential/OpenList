@@ -2,8 +2,11 @@ package data
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
@@ -16,6 +19,18 @@ import (
 	"github.com/pkg/errors"
 	"gorm.io/gorm"
 )
+
+func defaultServerDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, "Downloads", "OpenList")
+}
+
+func DefaultServerDownloadDirForPatch() string {
+	return defaultServerDownloadDir()
+}
 
 func initSettings() {
 	initialSettingItems := InitialSettings()
@@ -237,6 +252,9 @@ func InitialSettings() []model.SettingItem {
 		{Key: conf.FTPTLSPrivateKeyPath, Value: "", Type: conf.TypeString, Group: model.FTP, Flag: model.PRIVATE},
 		{Key: conf.FTPTLSPublicCertPath, Value: "", Type: conf.TypeString, Group: model.FTP, Flag: model.PRIVATE},
 		{Key: conf.SFTPDisablePasswordLogin, Value: "false", Type: conf.TypeBool, Group: model.FTP, Flag: model.PRIVATE},
+
+		// server download settings
+		{Key: conf.ServerDownloadDir, Value: defaultServerDownloadDir(), Type: conf.TypeString, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE},
 
 		// traffic settings
 		{Key: conf.TaskOfflineDownloadThreadsNum, Value: strconv.Itoa(conf.Conf.Tasks.Download.Workers), Type: conf.TypeNumber, Group: model.TRAFFIC, Flag: model.PRIVATE},

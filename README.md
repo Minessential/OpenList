@@ -20,6 +20,12 @@
 - [CODE OF CONDUCT](./CODE_OF_CONDUCT.md)
 - [LICENSE](./LICENSE)
 
+## Secondary Development Notice
+
+This repository contains secondary-development changes based on OpenList. I am not the original author of OpenList and am not claiming upstream authorship; the original project, trademark, logo assets, and upstream credits belong to the OpenList Team and their contributors.
+
+The current worktree adds and adjusts server-side download capabilities, including a dedicated server download permission, default server download directory setting, backend task/API support, and related tests. Please review these changes as downstream modifications and continue to follow the upstream AGPL-3.0 license requirements.
+
 ## Disclaimer
 
 OpenList is an open-source project independently maintained by the OpenList Team, following the AGPL-3.0 license and committed to maintaining complete code openness and modification transparency.

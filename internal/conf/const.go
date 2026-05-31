@@ -70,6 +70,9 @@ const (
 	Aria2Uri    = "aria2_uri"
 	Aria2Secret = "aria2_secret"
 
+	// server download
+	ServerDownloadDir = "server_download_dir"
+
 	// transmission
 	TransmissionUri      = "transmission_uri"
 	TransmissionSeedtime = "transmission_seedtime"

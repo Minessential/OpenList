@@ -2,6 +2,8 @@ package handles
 
 import (
 	"math"
+	"os"
+	stdpath "path"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
@@ -17,17 +19,51 @@ import (
 )
 
 type TaskInfo struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Creator     string      `json:"creator"`
-	CreatorRole int         `json:"creator_role"`
-	State       tache.State `json:"state"`
-	Status      string      `json:"status"`
-	Progress    float64     `json:"progress"`
-	StartTime   *time.Time  `json:"start_time"`
-	EndTime     *time.Time  `json:"end_time"`
-	TotalBytes  int64       `json:"total_bytes"`
-	Error       string      `json:"error"`
+	ID              string      `json:"id"`
+	Type            string      `json:"type,omitempty"`
+	Name            string      `json:"name"`
+	Creator         string      `json:"creator"`
+	CreatorRole     int         `json:"creator_role"`
+	State           tache.State `json:"state"`
+	StateText       string      `json:"state_text"`
+	Status          string      `json:"status"`
+	Progress        float64     `json:"progress"`
+	StartTime       *time.Time  `json:"start_time"`
+	EndTime         *time.Time  `json:"end_time"`
+	TotalBytes      int64       `json:"total_bytes"`
+	DownloadedBytes int64       `json:"downloaded_bytes,omitempty"`
+	SrcPath         string      `json:"src_path,omitempty"`
+	SrcStorageMp    string      `json:"src_storage_mp,omitempty"`
+	DstLocalPath    string      `json:"dst_local_path,omitempty"`
+	Error           string      `json:"error"`
+	FailedReason    string      `json:"failed_reason,omitempty"`
+}
+
+func stateText(state tache.State) string {
+	switch state {
+	case tache.StatePending:
+		return "pending"
+	case tache.StateRunning:
+		return "running"
+	case tache.StateSucceeded:
+		return "succeeded"
+	case tache.StateCanceling:
+		return "canceling"
+	case tache.StateCanceled:
+		return "canceled"
+	case tache.StateErrored:
+		return "errored"
+	case tache.StateFailing:
+		return "failing"
+	case tache.StateFailed:
+		return "failed"
+	case tache.StateWaitingRetry:
+		return "waiting_retry"
+	case tache.StateBeforeRetry:
+		return "before_retry"
+	default:
+		return "unknown"
+	}
 }
 
 func getTaskInfo[T task.TaskExtensionInfo](task T) TaskInfo {
@@ -46,12 +82,13 @@ func getTaskInfo[T task.TaskExtensionInfo](task T) TaskInfo {
 		creatorName = task.GetCreator().Username
 		creatorRole = task.GetCreator().Role
 	}
-	return TaskInfo{
+	info := TaskInfo{
 		ID:          task.GetID(),
 		Name:        task.GetName(),
 		Creator:     creatorName,
 		CreatorRole: creatorRole,
 		State:       task.GetState(),
+		StateText:   stateText(task.GetState()),
 		Status:      task.GetStatus(),
 		Progress:    progress,
 		StartTime:   task.GetStartTime(),
@@ -59,6 +96,18 @@ func getTaskInfo[T task.TaskExtensionInfo](task T) TaskInfo {
 		TotalBytes:  task.GetTotalBytes(),
 		Error:       errMsg,
 	}
+	if st, ok := any(task).(*fs.ServerDownloadTask); ok {
+		info.Type = "server_download"
+		info.DownloadedBytes = st.DownloadedBytes
+		info.SrcPath = st.SrcPath
+		if info.SrcPath == "" {
+			info.SrcPath = stdpath.Join(st.SrcStorageMp, st.SrcActualPath)
+		}
+		info.SrcStorageMp = st.SrcStorageMp
+		info.DstLocalPath = st.DstLocalPath
+		info.FailedReason = st.FailedReason
+	}
+	return info
 }
 
 func getTaskInfos[T task.TaskExtensionInfo](tasks []T) []TaskInfo {
@@ -217,11 +266,89 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 	})
 }
 
+type serverDownloadDeleteReq struct {
+	IDs         []string `json:"ids"`
+	DeleteFiles bool     `json:"delete_files"`
+}
+
+func deleteServerDownloadLocalFile(t *fs.ServerDownloadTask) error {
+	if t.DstLocalPath == "" {
+		return nil
+	}
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		err := os.Remove(t.DstLocalPath)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func isServerDownloadTaskDone(t *fs.ServerDownloadTask) bool {
+	return argsContains(t.GetState(), tache.StateSucceeded, tache.StateCanceled, tache.StateFailed)
+}
+
+func cancelServerDownloadTaskAndWait(tid string, t *fs.ServerDownloadTask) {
+	if isServerDownloadTaskDone(t) {
+		return
+	}
+	fs.ServerDownloadTaskManager.Cancel(tid)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if isServerDownloadTaskDone(t) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func shouldDeleteServerDownloadFile(t *fs.ServerDownloadTask, deleteFiles bool) bool {
+	if deleteFiles {
+		return true
+	}
+	return t.GetState() != tache.StateSucceeded
+}
+
+func deleteServerDownloadTasks(c *gin.Context) {
+	isAdmin, uid, ok := getUserInfo(c)
+	if !ok {
+		common.ErrorStrResp(c, "user invalid", 401)
+		return
+	}
+	var req serverDownloadDeleteReq
+	if err := c.ShouldBind(&req); err != nil {
+		common.ErrorStrResp(c, "invalid request format", 400)
+		return
+	}
+	retErrs := make(map[string]string)
+	for _, tid := range req.IDs {
+		t, ok := fs.ServerDownloadTaskManager.GetByID(tid)
+		if !ok || (!isAdmin && uid != t.GetCreator().ID) {
+			retErrs[tid] = "task not found"
+			continue
+		}
+		cancelServerDownloadTaskAndWait(tid, t)
+		if shouldDeleteServerDownloadFile(t, req.DeleteFiles) {
+			if err := deleteServerDownloadLocalFile(t); err != nil {
+				retErrs[tid] = err.Error()
+				continue
+			}
+		}
+		fs.ServerDownloadTaskManager.Remove(tid)
+	}
+	common.SuccessResp(c, retErrs)
+}
+
 func SetupTaskRoute(g *gin.RouterGroup) {
 	taskRoute(g.Group("/upload"), fs.UploadTaskManager)
 	taskRoute(g.Group("/copy"), fs.CopyTaskManager)
 	taskRoute(g.Group("/move"), fs.MoveTaskManager)
 	taskRoute(g.Group("/offline_download"), tool.DownloadTaskManager)
+	taskRoute(g.Group("/server_download"), fs.ServerDownloadTaskManager)
+	g.POST("/server_download/delete_with_files", deleteServerDownloadTasks)
 	taskRoute(g.Group("/offline_download_transfer"), tool.TransferTaskManager)
 	taskRoute(g.Group("/decompress"), fs.ArchiveDownloadTaskManager)
 	taskRoute(g.Group("/decompress_upload"), fs.ArchiveContentUploadTaskManager)

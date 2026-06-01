@@ -34,7 +34,7 @@ func InitTaskManager() {
 	op.RegisterSettingChangingCallback(func() {
 		tool.DownloadTaskManager.SetWorkersNumActive(taskFilterNegative(setting.GetInt(conf.TaskOfflineDownloadThreadsNum, conf.Conf.Tasks.Download.Workers)))
 	})
-	fs.ServerDownloadTaskManager = tache.NewManager[*fs.ServerDownloadTask](tache.WithWorks(setting.GetInt(conf.TaskOfflineDownloadThreadsNum, conf.Conf.Tasks.Download.Workers)), tache.WithPersistFunction(db.GetTaskDataFunc("server_download", conf.Conf.Tasks.Download.TaskPersistant), db.UpdateTaskDataFunc("server_download", conf.Conf.Tasks.Download.TaskPersistant)), tache.WithMaxRetry(conf.Conf.Tasks.Download.MaxRetry))
+	fs.ServerDownloadTaskManager = tache.NewManager[*fs.ServerDownloadTask](tache.WithWorks(setting.GetInt(conf.TaskOfflineDownloadThreadsNum, conf.Conf.Tasks.Download.Workers)), tache.WithPersistFunction(db.GetTaskDataFunc("server_download", true), db.UpdateTaskDataFunc("server_download", true)), tache.WithMaxRetry(conf.Conf.Tasks.Download.MaxRetry))
 	op.RegisterSettingChangingCallback(func() {
 		fs.ServerDownloadTaskManager.SetWorkersNumActive(taskFilterNegative(setting.GetInt(conf.TaskOfflineDownloadThreadsNum, conf.Conf.Tasks.Download.Workers)))
 	})

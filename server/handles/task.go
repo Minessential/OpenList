@@ -1,6 +1,7 @@
 package handles
 
 import (
+	"context"
 	"math"
 	"os"
 	stdpath "path"
@@ -19,24 +20,28 @@ import (
 )
 
 type TaskInfo struct {
-	ID              string      `json:"id"`
-	Type            string      `json:"type,omitempty"`
-	Name            string      `json:"name"`
-	Creator         string      `json:"creator"`
-	CreatorRole     int         `json:"creator_role"`
-	State           tache.State `json:"state"`
-	StateText       string      `json:"state_text"`
-	Status          string      `json:"status"`
-	Progress        float64     `json:"progress"`
-	StartTime       *time.Time  `json:"start_time"`
-	EndTime         *time.Time  `json:"end_time"`
-	TotalBytes      int64       `json:"total_bytes"`
-	DownloadedBytes int64       `json:"downloaded_bytes,omitempty"`
-	SrcPath         string      `json:"src_path,omitempty"`
-	SrcStorageMp    string      `json:"src_storage_mp,omitempty"`
-	DstLocalPath    string      `json:"dst_local_path,omitempty"`
-	Error           string      `json:"error"`
-	FailedReason    string      `json:"failed_reason,omitempty"`
+	ID               string      `json:"id"`
+	Type             string      `json:"type,omitempty"`
+	Name             string      `json:"name"`
+	Creator          string      `json:"creator"`
+	CreatorRole      int         `json:"creator_role"`
+	State            tache.State `json:"state"`
+	StateText        string      `json:"state_text"`
+	Status           string      `json:"status"`
+	Progress         float64     `json:"progress"`
+	StartTime        *time.Time  `json:"start_time"`
+	EndTime          *time.Time  `json:"end_time"`
+	TotalBytes       int64       `json:"total_bytes"`
+	DownloadedBytes  int64       `json:"downloaded_bytes,omitempty"`
+	SrcPath          string      `json:"src_path,omitempty"`
+	SrcStorageMp     string      `json:"src_storage_mp,omitempty"`
+	DstLocalPath     string      `json:"dst_local_path,omitempty"`
+	PartialLocalPath string      `json:"partial_local_path,omitempty"`
+	Paused           bool        `json:"paused,omitempty"`
+	Resumable        bool        `json:"resumable,omitempty"`
+	ResumeOffset     int64       `json:"resume_offset,omitempty"`
+	Error            string      `json:"error"`
+	FailedReason     string      `json:"failed_reason,omitempty"`
 }
 
 func stateText(state tache.State) string {
@@ -105,7 +110,14 @@ func getTaskInfo[T task.TaskExtensionInfo](task T) TaskInfo {
 		}
 		info.SrcStorageMp = st.SrcStorageMp
 		info.DstLocalPath = st.DstLocalPath
+		info.Paused = st.Paused
+		info.Resumable = st.IsResumable()
+		info.PartialLocalPath = st.PartialLocalPath
+		info.ResumeOffset = st.ResumeOffset
 		info.FailedReason = st.FailedReason
+		if st.Paused {
+			info.StateText = "paused"
+		}
 	}
 	return info
 }
@@ -116,6 +128,11 @@ func getTaskInfos[T task.TaskExtensionInfo](tasks []T) []TaskInfo {
 
 func argsContains[T comparable](v T, slice ...T) bool {
 	return utils.SliceContains(slice, v)
+}
+
+func isPausedServerDownloadTask(task any) bool {
+	st, ok := task.(*fs.ServerDownloadTask)
+	return ok && st.Paused
 }
 
 func getUserInfo(c *gin.Context) (bool, uint, bool) {
@@ -185,7 +202,8 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 			// avoid directly passing the user object into the function to reduce closure size
 			return (isAdmin || uid == task.GetCreator().ID) &&
 				argsContains(task.GetState(), tache.StatePending, tache.StateRunning, tache.StateCanceling,
-					tache.StateErrored, tache.StateFailing, tache.StateWaitingRetry, tache.StateBeforeRetry)
+					tache.StateErrored, tache.StateFailing, tache.StateWaitingRetry, tache.StateBeforeRetry) ||
+				((isAdmin || uid == task.GetCreator().ID) && isPausedServerDownloadTask(any(task)))
 		})))
 	})
 	g.GET("/done", func(c *gin.Context) {
@@ -197,7 +215,8 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 		}
 		common.SuccessResp(c, getTaskInfos(manager.GetByCondition(func(task T) bool {
 			return (isAdmin || uid == task.GetCreator().ID) &&
-				argsContains(task.GetState(), tache.StateCanceled, tache.StateFailed, tache.StateSucceeded)
+				argsContains(task.GetState(), tache.StateCanceled, tache.StateFailed, tache.StateSucceeded) &&
+				!isPausedServerDownloadTask(any(task))
 		})))
 	})
 	g.POST("/info", getTargetedHandler(manager, func(c *gin.Context, task T) {
@@ -208,6 +227,7 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 		common.SuccessResp(c)
 	}))
 	g.POST("/delete", getTargetedHandler(manager, func(c *gin.Context, task T) {
+		cleanupServerDownloadBeforeRemove(any(task), false)
 		manager.Remove(task.GetID())
 		common.SuccessResp(c)
 	}))
@@ -219,6 +239,7 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 		manager.Cancel(task.GetID())
 	}))
 	g.POST("/delete_some", getBatchHandler(manager, func(task T) {
+		cleanupServerDownloadBeforeRemove(any(task), false)
 		manager.Remove(task.GetID())
 	}))
 	g.POST("/retry_some", getBatchHandler(manager, func(task T) {
@@ -232,8 +253,13 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 			return
 		}
 		manager.RemoveByCondition(func(task T) bool {
-			return (isAdmin || uid == task.GetCreator().ID) &&
-				argsContains(task.GetState(), tache.StateCanceled, tache.StateFailed, tache.StateSucceeded)
+			matched := (isAdmin || uid == task.GetCreator().ID) &&
+				argsContains(task.GetState(), tache.StateCanceled, tache.StateFailed, tache.StateSucceeded) &&
+				!isPausedServerDownloadTask(any(task))
+			if matched {
+				cleanupServerDownloadBeforeRemove(any(task), false)
+			}
+			return matched
 		})
 		common.SuccessResp(c)
 	})
@@ -245,7 +271,11 @@ func taskRoute[T task.TaskExtensionInfo](g *gin.RouterGroup, manager task.Manage
 			return
 		}
 		manager.RemoveByCondition(func(task T) bool {
-			return (isAdmin || uid == task.GetCreator().ID) && task.GetState() == tache.StateSucceeded
+			matched := (isAdmin || uid == task.GetCreator().ID) && task.GetState() == tache.StateSucceeded
+			if matched {
+				cleanupServerDownloadBeforeRemove(any(task), false)
+			}
+			return matched
 		})
 		common.SuccessResp(c)
 	})
@@ -271,13 +301,13 @@ type serverDownloadDeleteReq struct {
 	DeleteFiles bool     `json:"delete_files"`
 }
 
-func deleteServerDownloadLocalFile(t *fs.ServerDownloadTask) error {
-	if t.DstLocalPath == "" {
+func removeLocalFileWithRetry(path string) error {
+	if path == "" {
 		return nil
 	}
 	var lastErr error
 	for i := 0; i < 20; i++ {
-		err := os.Remove(t.DstLocalPath)
+		err := os.Remove(path)
 		if err == nil || os.IsNotExist(err) {
 			return nil
 		}
@@ -285,6 +315,21 @@ func deleteServerDownloadLocalFile(t *fs.ServerDownloadTask) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return lastErr
+}
+
+func deleteServerDownloadLocalFiles(t *fs.ServerDownloadTask, deleteFinal bool) error {
+	t.RefreshResumeOffset()
+	if err := removeLocalFileWithRetry(t.PartialLocalPath); err != nil {
+		return err
+	}
+	if deleteFinal {
+		return removeLocalFileWithRetry(t.DstLocalPath)
+	}
+	return nil
+}
+
+func deleteServerDownloadLocalFile(t *fs.ServerDownloadTask) error {
+	return deleteServerDownloadLocalFiles(t, true)
 }
 
 func isServerDownloadTaskDone(t *fs.ServerDownloadTask) bool {
@@ -312,6 +357,64 @@ func shouldDeleteServerDownloadFile(t *fs.ServerDownloadTask, deleteFiles bool) 
 	return t.GetState() != tache.StateSucceeded
 }
 
+func cleanupServerDownloadBeforeRemove(task any, deleteFiles bool) {
+	st, ok := task.(*fs.ServerDownloadTask)
+	if !ok {
+		return
+	}
+	cancelServerDownloadTaskAndWait(st.GetID(), st)
+	_ = deleteServerDownloadLocalFiles(st, shouldDeleteServerDownloadFile(st, deleteFiles))
+}
+
+func pauseServerDownloadTask(c *gin.Context) {
+	getTargetedHandler(fs.ServerDownloadTaskManager, func(c *gin.Context, t *fs.ServerDownloadTask) {
+		if t.GetState() == tache.StateSucceeded {
+			common.ErrorStrResp(c, "succeeded task cannot be paused", 409)
+			return
+		}
+		t.Paused = true
+		t.Status = "paused"
+		t.FailedReason = ""
+		t.Persist()
+		fs.ServerDownloadTaskManager.Cancel(t.GetID())
+		common.SuccessResp(c, getTaskInfo(t))
+	})(c)
+}
+
+func resumeServerDownloadTask(c *gin.Context) {
+	getTargetedHandler(fs.ServerDownloadTaskManager, func(c *gin.Context, t *fs.ServerDownloadTask) {
+		if t.GetState() == tache.StateSucceeded {
+			common.ErrorStrResp(c, "succeeded task cannot be resumed", 409)
+			return
+		}
+		if isActiveServerDownloadState(t.GetState()) && !t.Paused {
+			common.ErrorStrResp(c, "task is already active", 409)
+			return
+		}
+		if t.Paused && !isServerDownloadTaskDone(t) {
+			cancelServerDownloadTaskAndWait(t.GetID(), t)
+			if !isServerDownloadTaskDone(t) {
+				common.ErrorStrResp(c, "task is still canceling", 409)
+				return
+			}
+		}
+		if !t.Paused && !t.IsResumable() {
+			common.ErrorStrResp(c, "task is not resumable", 409)
+			return
+		}
+		t.Paused = false
+		t.FailedReason = ""
+		t.Status = "queued for resume"
+		ctx, cancel := context.WithCancel(context.Background())
+		t.SetCtx(ctx)
+		t.SetCancelFunc(cancel)
+		t.SetErr(nil)
+		t.Persist()
+		fs.ServerDownloadTaskManager.Retry(t.GetID())
+		common.SuccessResp(c, getTaskInfo(t))
+	})(c)
+}
+
 func deleteServerDownloadTasks(c *gin.Context) {
 	isAdmin, uid, ok := getUserInfo(c)
 	if !ok {
@@ -331,11 +434,9 @@ func deleteServerDownloadTasks(c *gin.Context) {
 			continue
 		}
 		cancelServerDownloadTaskAndWait(tid, t)
-		if shouldDeleteServerDownloadFile(t, req.DeleteFiles) {
-			if err := deleteServerDownloadLocalFile(t); err != nil {
-				retErrs[tid] = err.Error()
-				continue
-			}
+		if err := deleteServerDownloadLocalFiles(t, shouldDeleteServerDownloadFile(t, req.DeleteFiles)); err != nil {
+			retErrs[tid] = err.Error()
+			continue
 		}
 		fs.ServerDownloadTaskManager.Remove(tid)
 	}
@@ -348,6 +449,8 @@ func SetupTaskRoute(g *gin.RouterGroup) {
 	taskRoute(g.Group("/move"), fs.MoveTaskManager)
 	taskRoute(g.Group("/offline_download"), tool.DownloadTaskManager)
 	taskRoute(g.Group("/server_download"), fs.ServerDownloadTaskManager)
+	g.POST("/server_download/pause", pauseServerDownloadTask)
+	g.POST("/server_download/resume", resumeServerDownloadTask)
 	g.POST("/server_download/delete_with_files", deleteServerDownloadTasks)
 	taskRoute(g.Group("/offline_download_transfer"), tool.TransferTaskManager)
 	taskRoute(g.Group("/decompress"), fs.ArchiveDownloadTaskManager)

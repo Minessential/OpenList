@@ -30,7 +30,7 @@ func isActiveServerDownloadState(state tache.State) bool {
 
 func serverDownloadTaskExists(dstLocalPath string) bool {
 	for _, t := range fs.ServerDownloadTaskManager.GetAll() {
-		if t.DstLocalPath == dstLocalPath && isActiveServerDownloadState(t.GetState()) {
+		if t.DstLocalPath == dstLocalPath && (isActiveServerDownloadState(t.GetState()) || t.Paused) {
 			return true
 		}
 	}
@@ -107,6 +107,16 @@ func FsServerDownload(c *gin.Context) {
 		if _, err := os.Stat(dstLocalPath); err == nil {
 			common.ErrorStrResp(c, fmt.Sprintf("server download target already exists [%s]", name), 409)
 			return
+		} else if !os.IsNotExist(err) {
+			common.ErrorResp(c, err, 500)
+			return
+		}
+		partialLocalPath := dstLocalPath + ".openlist.part"
+		if partialInfo, err := os.Stat(partialLocalPath); err == nil {
+			if partialInfo.Size() > obj.GetSize() {
+				common.ErrorStrResp(c, fmt.Sprintf("server download partial is larger than source [%s]", name), 409)
+				return
+			}
 		} else if !os.IsNotExist(err) {
 			common.ErrorResp(c, err, 500)
 			return

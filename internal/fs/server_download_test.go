@@ -7,8 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
+	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/tache"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestServerDownloadLocalPath(t *testing.T) {
@@ -66,6 +71,38 @@ func TestServerDownloadRefreshResumeOffset(t *testing.T) {
 	}
 	if serverTask.PartialLocalPath != partial {
 		t.Fatalf("expected partial path %q, got %q", partial, serverTask.PartialLocalPath)
+	}
+}
+
+func TestServerDownloadTaskUsesServerDownloadMaxRetrySetting(t *testing.T) {
+	oldConf := conf.Conf
+	conf.Conf = conf.DefaultConfig(t.TempDir())
+	defer func() {
+		conf.Conf = oldConf
+	}()
+
+	dB, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Init(dB)
+	defer func() {
+		db.Close()
+		op.SettingCacheUpdate()
+	}()
+	if err := op.SaveSettingItem(&model.SettingItem{
+		Key:   conf.ServerDownloadTaskMaxRetry,
+		Value: "3",
+		Type:  conf.TypeNumber,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	serverTask := &ServerDownloadTask{}
+	serverTask.setCurrentMaxRetry()
+	_, maxRetry := serverTask.GetRetry()
+	if maxRetry != 3 {
+		t.Fatalf("expected max retry 3, got %d", maxRetry)
 	}
 }
 

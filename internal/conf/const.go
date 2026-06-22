@@ -71,7 +71,8 @@ const (
 	Aria2Secret = "aria2_secret"
 
 	// server download
-	ServerDownloadDir = "server_download_dir"
+	ServerDownloadDir          = "server_download_dir"
+	ServerDownloadTaskMaxRetry = "server_download_task_max_retry"
 
 	// transmission
 	TransmissionUri      = "transmission_uri"

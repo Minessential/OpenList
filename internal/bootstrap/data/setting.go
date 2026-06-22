@@ -255,6 +255,7 @@ func InitialSettings() []model.SettingItem {
 
 		// server download settings
 		{Key: conf.ServerDownloadDir, Value: defaultServerDownloadDir(), Type: conf.TypeString, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE},
+		{Key: conf.ServerDownloadTaskMaxRetry, Value: strconv.Itoa(conf.Conf.Tasks.Download.MaxRetry), Type: conf.TypeNumber, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE, Help: "0 means no automatic retry"},
 
 		// traffic settings
 		{Key: conf.TaskOfflineDownloadThreadsNum, Value: strconv.Itoa(conf.Conf.Tasks.Download.Workers), Type: conf.TypeNumber, Group: model.TRAFFIC, Flag: model.PRIVATE},

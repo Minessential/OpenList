@@ -41,3 +41,22 @@ func TestInitialSettingsUsesDefaultServerDownloadDir(t *testing.T) {
 	}
 	t.Fatal("server_download_dir setting not found")
 }
+
+func TestInitialSettingsIncludesServerDownloadTaskMaxRetry(t *testing.T) {
+	oldConf := conf.Conf
+	conf.Conf = conf.DefaultConfig(t.TempDir())
+	defer func() {
+		conf.Conf = oldConf
+	}()
+
+	settings := InitialSettings()
+	for _, item := range settings {
+		if item.Key == conf.ServerDownloadTaskMaxRetry {
+			if item.Value != "1" {
+				t.Fatalf("expected default server download retry to be 1, got %q", item.Value)
+			}
+			return
+		}
+	}
+	t.Fatal("server_download_task_max_retry setting not found")
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	"github.com/OpenListTeam/OpenList/v4/internal/setting"
 	"github.com/OpenListTeam/OpenList/v4/internal/stream"
 	"github.com/OpenListTeam/OpenList/v4/internal/task"
 	"github.com/OpenListTeam/OpenList/v4/pkg/http_range"
@@ -62,8 +63,17 @@ func ServerDownload(ctx context.Context, srcObjPath, dstRoot string) (task.TaskE
 		DstLocalPath:     dstLocalPath,
 		PartialLocalPath: serverDownloadPartialPath(dstLocalPath),
 	}
+	t.setCurrentMaxRetry()
 	ServerDownloadTaskManager.Add(t)
 	return t, nil
+}
+
+func (t *ServerDownloadTask) setCurrentMaxRetry() {
+	_, maxRetry := t.GetRetry()
+	if maxRetry != 0 {
+		return
+	}
+	t.SetRetry(0, setting.GetInt(conf.ServerDownloadTaskMaxRetry, conf.Conf.Tasks.Download.MaxRetry))
 }
 
 func ServerDownloadLocalPath(dstRoot, srcObjPath string) (string, error) {
